@@ -1,0 +1,51 @@
+[
+  {
+    "ticket_id": "TKT-1001",
+    "customer_email": "dana.reyes@example.com",
+    "subject": "I have been charged TWICE and I want my money back now",
+    "body": "This is unacceptable. I was billed 89.00 on the 3rd and then AGAIN on the 4th for the same monthly plan. That is money out of our account that I did not authorise. I have suppliers to pay. Refund the duplicate charge today or I am cancelling and disputing it with my bank.",
+    "_expected": "urgent -> human_review_queue (money taken in error + angry)"
+  },
+  {
+    "ticket_id": "TKT-1002",
+    "customer_email": "sam.okafor@example.com",
+    "subject": "How do I reset my password?",
+    "body": "Hi, I could not remember my password and I do not see a reset link on the login page. Could you point me to the right place? No rush. Thanks!",
+    "_expected": "low urgency -> standard_queue, auto-drafted reply"
+  },
+  {
+    "ticket_id": "TKT-1003",
+    "customer_email": "priya.nair@example.com",
+    "subject": "Feature idea: bulk CSV export for payslips",
+    "body": "We are enjoying Havelock so far. One thing that would save our office manager a lot of time is exporting a whole month of payslips at once as a single CSV, instead of downloading them one by one. Not urgent, just wanted to put it on your radar.",
+    "_expected": "feature_request, low urgency -> standard_queue"
+  },
+  {
+    "ticket_id": "TKT-1004",
+    "customer_email": "tom.bennett@example.com",
+    "subject": "Honestly disappointed",
+    "body": "I do not really know where to start. The last few weeks using this have just been frustrating. Simple things take longer than they should, the reports screen is confusing, and I am starting to wonder if this was the right choice for our practice. Not sure what you can do about it but I wanted someone to know.",
+    "_expected": "BORDERLINE - negative sentiment, but nobody is blocked and no money is at risk. Should be medium/low urgency -> standard_queue, NOT urgent."
+  },
+  {
+    "ticket_id": "TKT-1005",
+    "customer_email": "alex.novak@example.com",
+    "subject": "Bank feed has not synced since Tuesday",
+    "body": "Reporting an issue. Our business current account feed stopped importing transactions on Tuesday morning - the most recent one shown is dated the 14th. I disconnected and reconnected the feed from Settings and it reports itself as connected, but nothing imports. This is holding up our month-end reconciliation. Happy to send the account reference if that helps.",
+    "_expected": "THRESHOLD CHECK - technical, high urgency, neutral tone. Should NOT trip the urgent branch (high + neutral, not high + negative)."
+  },
+  {
+    "ticket_id": "TKT-1006",
+    "customer_email": "grace.lin@example.com",
+    "subject": "Just wanted to say thanks",
+    "body": "No issue here! Your support person Maria sorted out my payroll onboarding question in about five minutes yesterday and was lovely about it. Please pass on my thanks to her. Keep it up.",
+    "_expected": "not really a ticket - should classify sensibly (positive, low) and not break the flow"
+  },
+  {
+    "ticket_id": "TKT-1007",
+    "customer_email": "hannah.whitfield@example.com",
+    "subject": "Payroll run failed - 12 staff not paid tomorrow",
+    "body": "Our monthly payroll run for 12 employees failed last night. The only message is 'submission rejected' with no detail. Payday is tomorrow. I have re-run it twice and it fails the same way each time. I need someone to look at this urgently - these are people's wages and they are expecting the money in the morning.",
+    "_expected": "urgent -> human_review_queue (payroll failed, staff unpaid = critical)"
+  }
+]

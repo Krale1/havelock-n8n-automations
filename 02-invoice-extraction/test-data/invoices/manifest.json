@@ -1,0 +1,74 @@
+[
+  {
+    "file": "invoice-01-clean.pdf",
+    "vendor_name": "Marlow Stationery Ltd",
+    "invoice_number": "MS-20841",
+    "invoice_date": "2026-08-14",
+    "line_items_sum": 130.0,
+    "stated_subtotal": 130.0,
+    "tax_amount": 11.05,
+    "total_amount": 141.05,
+    "expected_status": "auto_processed",
+    "why": "One line item, clean arithmetic, well under the review threshold."
+  },
+  {
+    "file": "invoice-02-multi-line.pdf",
+    "vendor_name": "Kesterly Print & Signage",
+    "invoice_number": "KP-3307",
+    "invoice_date": "2026-08-22",
+    "line_items_sum": 925.0,
+    "stated_subtotal": 925.0,
+    "tax_amount": 78.62,
+    "total_amount": 1003.62,
+    "expected_status": "auto_processed",
+    "why": "Three line items that sum correctly to the subtotal, tax adds up, under threshold."
+  },
+  {
+    "file": "invoice-03-sum-mismatch.pdf",
+    "vendor_name": "Alder & Finch Supplies",
+    "invoice_number": "AF-11290",
+    "invoice_date": "2026-08-27",
+    "line_items_sum": 605.0,
+    "stated_subtotal": 745.0,
+    "tax_amount": 63.33,
+    "total_amount": 808.33,
+    "expected_status": "needs_review",
+    "why": "Line items sum to 605.00 but the invoice states a subtotal of 745.00 - a 140.00 discrepancy."
+  },
+  {
+    "file": "invoice-04-missing-fields.pdf",
+    "vendor_name": null,
+    "invoice_number": null,
+    "invoice_date": null,
+    "line_items_sum": 47.8,
+    "stated_subtotal": 47.8,
+    "tax_amount": 0.0,
+    "total_amount": 47.8,
+    "expected_status": "needs_review",
+    "why": "No vendor name and no invoice date on the document - both are required fields."
+  },
+  {
+    "file": "invoice-05-large.pdf",
+    "vendor_name": "Thornwood Facilities Group",
+    "invoice_number": "TFG-88214",
+    "invoice_date": "2026-09-01",
+    "line_items_sum": 6550.0,
+    "stated_subtotal": 6550.0,
+    "tax_amount": 556.75,
+    "total_amount": 7106.75,
+    "expected_status": "needs_review",
+    "why": "Arithmetic is perfect, but the total is over the 5,000 review threshold - large amounts get a human look before booking."
+  },
+  {
+    "file": "invoice-06-poor-scan.pdf",
+    "vendor_name": "Rowan Catering Co",
+    "invoice_number": "RC-0912",
+    "invoice_date": "2026-09-05",
+    "line_items_sum": 775.0,
+    "stated_subtotal": 775.0,
+    "tax_amount": 65.88,
+    "total_amount": 840.88,
+    "expected_status": "needs_review",
+    "why": "Photographed at an angle with poor contrast and the total partly clipped - Claude should say it is unsure rather than guess."
+  }
+]

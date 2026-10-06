@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232f5bd0'/></svg>">
+<title>Get started with Havelock</title>
+<!--
+  The prospective customer's front door.
+
+  Same rule as customer-support.html: this page has no idea an internal
+  console exists. It POSTs once and shows a confirmation. It never learns
+  which onboarding track it was put on, whether it was flagged, or that a
+  welcome email was drafted for someone to read and send.
+
+  The free-text "tell us about your business" field is the one the
+  classification step actually reads. Everything else is record-keeping.
+-->
+<style>
+  :root {
+    --brand:#2f5bd0;
+    --ink:#161c22;
+    --mid:#5b646e;
+    --soft:#8b939c;
+    --line:#e2e6ea;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0;
+    min-height:100vh;
+    background:#eef1f6;
+    color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:48px 20px 40px;
+  }
+  .brand {
+    display:flex; align-items:center; gap:10px;
+    margin-bottom:26px;
+  }
+  .brand__mark {
+    width:26px; height:26px; border-radius:7px;
+    background:linear-gradient(135deg,#2f5bd0,#5b8def);
+  }
+  .brand__name { font-size:19px; font-weight:680; letter-spacing:-.015em; }
+
+  .card {
+    width:100%; max-width:560px;
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:32px 30px 30px;
+    box-shadow:0 1px 2px rgba(16,24,32,.04), 0 8px 30px rgba(16,24,32,.06);
+  }
+  h1 { margin:0 0 6px; font-size:23px; letter-spacing:-.02em; }
+  .lede { margin:0 0 26px; color:var(--mid); font-size:15px; }
+
+  label { display:block; margin-bottom:18px; }
+  .label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
+  .hint { font-weight:400; color:var(--soft); }
+  input, textarea {
+    width:100%; font:inherit; color:var(--ink);
+    padding:11px 13px;
+    border:1px solid #d5dae0; border-radius:9px; background:#fff;
+  }
+  input:focus, textarea:focus {
+    outline:3px solid rgba(47,91,208,.18);
+    outline-offset:0;
+    border-color:var(--brand);
+  }
+  textarea { min-height:150px; resize:vertical; }
+
+  /* Two short fields share a line; they collapse on a narrow screen. */
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
+  @media (max-width:520px) { .row { grid-template-columns:1fr; } }
+
+  button {
+    width:100%; font:inherit; font-weight:650; font-size:15.5px;
+    color:#fff; background:var(--brand);
+    border:0; border-radius:9px; padding:13px;
+    cursor:pointer;
+  }
+  button:hover:not(:disabled) { background:#2a51bb; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+
+  .error {
+    margin-top:16px; padding:11px 13px;
+    background:#fdeceb; border:1px solid #f2c6c2; border-radius:9px;
+    color:#8a2a22; font-size:14.5px;
+  }
+
+  /* confirmation replaces the form entirely */
+  .done { text-align:center; padding:14px 0 6px; }
+  .done__tick {
+    width:46px; height:46px; margin:0 auto 16px;
+    border-radius:50%; background:#e6f5ec;
+    display:flex; align-items:center; justify-content:center;
+    color:#17663a; font-size:23px; font-weight:700;
+  }
+  .done h2 { margin:0 0 8px; font-size:19px; letter-spacing:-.01em; }
+  .done p { margin:0; color:var(--mid); font-size:15px; }
+
+  .foot { margin-top:22px; color:var(--soft); font-size:12.5px; text-align:center; }
+
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+
+  <div class="brand">
+    <span class="brand__mark" aria-hidden="true"></span>
+    <span class="brand__name">Havelock</span>
+  </div>
+
+  <main class="card">
+
+    <div id="form-state">
+      <h1>Get started</h1>
+      <p class="lede">Tell us a little about your business and we'll set you up.</p>
+
+      <form id="signup-form" autocomplete="on" novalidate>
+        <label>
+          <span class="label">Company name</span>
+          <input type="text" id="company_name" name="company_name"
+                 placeholder="Your business" required>
+        </label>
+
+        <div class="row">
+          <label>
+            <span class="label">Your name</span>
+            <input type="text" id="contact_name" name="contact_name"
+                   placeholder="First and last" required>
+          </label>
+
+          <label>
+            <span class="label">Number of employees</span>
+            <input type="number" id="employee_count" name="employee_count"
+                   min="1" step="1" placeholder="e.g. 12" required>
+          </label>
+        </div>
+
+        <label>
+          <span class="label">Email</span>
+          <input type="email" id="contact_email" name="contact_email"
+                 placeholder="you@yourbusiness.com" required>
+        </label>
+
+        <label>
+          <span class="label">
+            Tell us about your business
+            <span class="hint">— how you pay people, where they're based, anything unusual</span>
+          </span>
+          <textarea id="business_description" name="business_description"
+                    placeholder="What you do, who's on the payroll, and how you pay them today."
+                    required></textarea>
+        </label>
+
+        <button type="submit" id="send">Create my account</button>
+      </form>
+
+      <div class="error" id="error" hidden></div>
+    </div>
+
+    <div id="done-state" hidden>
+      <div class="done">
+        <div class="done__tick" aria-hidden="true">✓</div>
+        <h2>Thanks — you're all signed up.</h2>
+        <p>We'll be in touch shortly to get you set up.</p>
+      </div>
+    </div>
+
+  </main>
+
+  <p class="foot">Havelock is a fictional company, used for a demo.</p>
+
+<script>
+'use strict';
+
+// Through the same local proxy the rest of the demo uses, so the browser
+// never makes a cross-origin request.
+const ENDPOINT = '/webhook/customer-signup';
+
+const form = document.getElementById('signup-form');
+const button = document.getElementById('send');
+const errorBox = document.getElementById('error');
+
+const FIELDS = [
+  'company_name',
+  'contact_name',
+  'contact_email',
+  'employee_count',
+  'business_description',
+];
+
+function fail(message) {
+  errorBox.textContent = message;
+  errorBox.hidden = false;
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  errorBox.hidden = true;
+
+  const payload = {};
+  for (const name of FIELDS) {
+    payload[name] = document.getElementById(name).value.trim();
+  }
+
+  if (FIELDS.some((name) => !payload[name])) {
+    return fail('Please fill in every field before continuing.');
+  }
+
+  button.disabled = true;
+  button.textContent = 'Setting you up…';
+
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    // The workflow replies with a bare acknowledgement and nothing else.
+    // Even if it said more, this page would ignore it - the onboarding
+    // track and any review flag are internal.
+    if (!res.ok) throw new Error('status ' + res.status);
+
+    document.getElementById('form-state').hidden = true;
+    document.getElementById('done-state').hidden = false;
+  } catch (err) {
+    // Never pretend it worked.
+    fail('Something went wrong creating your account. Please try again.');
+    button.disabled = false;
+    button.textContent = 'Create my account';
+  }
+});
+</script>
+</body>
+</html>

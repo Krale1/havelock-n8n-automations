@@ -1,0 +1,793 @@
+{
+  "name": "Havelock - Support Ticket Triage & Routing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-triage",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-ticket-triage",
+      "name": "Webhook: New Ticket",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -820,
+        300
+      ],
+      "webhookId": "a7f3c1e2-9b4d-4e18-8c62-5d0a1f7b3e94"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a13",
+              "name": "ticket_id",
+              "value": "={{ $json.body.ticket_id || 'TKT-' + $now.toMillis() }}",
+              "type": "string"
+            },
+            {
+              "id": "a14",
+              "name": "customer_email",
+              "value": "={{ $json.body.customer_email || 'unknown@example.com' }}",
+              "type": "string"
+            },
+            {
+              "id": "a15",
+              "name": "subject",
+              "value": "={{ $json.body.subject || '(no subject)' }}",
+              "type": "string"
+            },
+            {
+              "id": "a16",
+              "name": "body",
+              "value": "={{ $json.body.body || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "normalize-ticket",
+      "name": "Normalize Ticket",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-4-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Subject: {{ $json.subject }}\n\nBody:\n{{ $json.body }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You are a support ticket triage assistant at Havelock, which makes payroll and bookkeeping software for small businesses (5-50 employees).\nGiven a ticket's subject and body, respond with ONLY valid JSON (no markdown fences, no explanation) with keys: topic, urgency, sentiment, summary.\n\nAllowed values:\n- topic: billing | technical | account | feature_request | complaint | other\n- urgency: low | medium | high | critical\n- sentiment: positive | neutral | negative\n- summary: one sentence, max 25 words, describing the issue.\n\nUrgency thresholds:\n- critical = a payroll run has failed or staff will not be paid on time, money has left an account in error, a security or fraud concern, or an imminent statutory filing deadline.\n- high = the customer is blocked from important work, but nobody is going unpaid and no deadline is imminent.\n- medium = a real problem that has a workaround.\n- low = a question, a request, or feedback.\nAn angry or frustrated tone on its own is NOT critical. Judge urgency on impact, sentiment on tone.\n\nNote: \"billing\" means a problem with the customer's own Havelock subscription. A problem with the customer paying their staff is \"technical\".",
+          "maxTokens": 300,
+          "temperature": 0,
+          "includeMergedResponse": true
+        }
+      },
+      "id": "classify-ticket",
+      "name": "Classify Ticket (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        -380,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Parse Claude's JSON classification into flat workflow fields.\n// Claude is told to return bare JSON, but we never trust that blindly:\n// fences, stray prose, or an invalid enum must not break the run.\n\nconst ALLOWED = {\n  topic: ['billing', 'technical', 'account', 'feature_request', 'complaint', 'other'],\n  urgency: ['low', 'medium', 'high', 'critical'],\n  sentiment: ['positive', 'neutral', 'negative'],\n};\n\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text).trim();\n  t = t.replace(/^```(?:json)?/i, \"\").replace(/```$/, \"\").trim();\n  const start = t.indexOf('{');\n  const end = t.lastIndexOf('}');\n  if (start === -1 || end === -1 || end <= start) return null;\n  try {\n    return JSON.parse(t.slice(start, end + 1));\n  } catch (err) {\n    return null;\n  }\n}\n\nfunction pick(value, allowed, fallback) {\n  const v = String(value ?? '').trim().toLowerCase();\n  return allowed.includes(v) ? v : fallback;\n}\n\nconst tickets = $('Normalize Ticket').all();\nconst incoming = $input.all();\nconst results = [];\n\nfor (let i = 0; i < incoming.length; i++) {\n  const ticket = tickets[Math.min(i, tickets.length - 1)].json;\n  const parsed = extractJson(incoming[i].json.merged_response);\n\n  // Fail safe: if we could not classify it, a human looks at it.\n  // Silently auto-replying to an unclassified ticket is the worse failure.\n  if (!parsed) {\n    results.push({\n      json: {\n        ...ticket,\n        topic: 'other',\n        urgency: 'critical',\n        sentiment: 'neutral',\n        summary: 'Automatic classification failed - model output was not valid JSON.',\n        classification_ok: false,\n        route_reason: 'classification_failed_fail_safe_to_human',\n      },\n      pairedItem: { item: i },\n    });\n    continue;\n  }\n\n  const topic = pick(parsed.topic, ALLOWED.topic, 'other');\n  const urgency = pick(parsed.urgency, ALLOWED.urgency, 'medium');\n  const sentiment = pick(parsed.sentiment, ALLOWED.sentiment, 'neutral');\n  const summary = String(parsed.summary ?? '').trim() || 'No summary returned.';\n\n  let route_reason = 'standard_queue';\n  if (urgency === 'critical') {\n    route_reason = 'urgency_is_critical';\n  } else if (sentiment === 'negative' && urgency === 'high') {\n    route_reason = 'negative_sentiment_and_high_urgency';\n  }\n\n  results.push({\n    json: { ...ticket, topic, urgency, sentiment, summary, classification_ok: true, route_reason },\n    pairedItem: { item: i },\n  });\n}\n\nreturn results;"
+      },
+      "id": "parse-classification",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-critical",
+              "leftValue": "={{ $json.urgency }}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "cond-negative-high",
+              "leftValue": "={{ $json.sentiment === 'negative' && $json.urgency === 'high' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "route-needs-human",
+      "name": "Needs Human Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        60,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "triage-bot@havelock.example",
+        "toEmail": "oncall@havelock.example",
+        "subject": "=[URGENT] {{ $json.ticket_id }} - {{ $json.topic }} / {{ $json.urgency }}",
+        "emailFormat": "text",
+        "text": "=A ticket needs immediate human review.\n\nTicket: {{ $json.ticket_id }}\nFrom: {{ $json.customer_email }}\nSubject: {{ $json.subject }}\n\nTopic: {{ $json.topic }}\nUrgency: {{ $json.urgency }}\nSentiment: {{ $json.sentiment }}\nWhy it was flagged: {{ $json.route_reason }}\n\nSummary: {{ $json.summary }}\n\nNo auto-reply was drafted for this ticket.",
+        "options": {}
+      },
+      "id": "notify-oncall",
+      "name": "Notify On-Call (SMTP)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        280,
+        180
+      ],
+      "disabled": true,
+      "notes": "Disabled for the demo - no SMTP credential. Wired to show the escalation pattern."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a17",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "a18",
+              "name": "ticket_id",
+              "value": "={{ $json.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "a19",
+              "name": "customer_email",
+              "value": "={{ $json.customer_email }}",
+              "type": "string"
+            },
+            {
+              "id": "a20",
+              "name": "subject",
+              "value": "={{ $json.subject }}",
+              "type": "string"
+            },
+            {
+              "id": "a21",
+              "name": "body",
+              "value": "={{ $json.body }}",
+              "type": "string"
+            },
+            {
+              "id": "a22",
+              "name": "topic",
+              "value": "={{ $json.topic }}",
+              "type": "string"
+            },
+            {
+              "id": "a23",
+              "name": "urgency",
+              "value": "={{ $json.urgency }}",
+              "type": "string"
+            },
+            {
+              "id": "a24",
+              "name": "sentiment",
+              "value": "={{ $json.sentiment }}",
+              "type": "string"
+            },
+            {
+              "id": "a25",
+              "name": "summary",
+              "value": "={{ $json.summary }}",
+              "type": "string"
+            },
+            {
+              "id": "a26",
+              "name": "routed_to",
+              "value": "human_review_queue",
+              "type": "string"
+            },
+            {
+              "id": "a27",
+              "name": "draft_reply",
+              "value": "URGENT - human required. No auto-reply drafted.",
+              "type": "string"
+            },
+            {
+              "id": "a28",
+              "name": "status",
+              "value": "needs_review",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-urgent-row",
+      "name": "Build Row: Needs Review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        500,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "tickets"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "body",
+              "displayName": "body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "urgency",
+              "displayName": "urgency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sentiment",
+              "displayName": "sentiment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "routed_to",
+              "displayName": "routed_to",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "draft_reply",
+              "displayName": "draft_reply",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "sheets-log-urgent-ticket",
+      "name": "Sheets: Log Urgent Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        720,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-4-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Ticket subject: {{ $json.subject }}\n\nTicket body:\n{{ $json.body }}\n\nTriage result - topic: {{ $json.topic }}, urgency: {{ $json.urgency }}, sentiment: {{ $json.sentiment }}\nOne-line summary: {{ $json.summary }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You are a support agent at Havelock, which makes payroll and bookkeeping software for small businesses.\nDraft a first reply to the customer: short (max 120 words), polite, acknowledging the specific issue and stating the next step.\n\nHard rules. You have no access to any live system, so you cannot verify anything:\n- Never confirm that a refund, credit, cancellation, or subscription change has been made.\n- Never state that a payroll run has been corrected, re-run, or completed.\n- Never confirm that a payment, bank sync, or statutory filing has gone through.\n- Never give tax, accounting, payroll-compliance, or financial advice of any kind.\n- Never invent amounts, dates, reference numbers, deadlines, or policy details.\n- Never promise a specific resolution time.\n\nIf the issue needs account access or involves money movement, say that a support specialist will review it and follow up directly.\n\nReturn only the reply text. No subject line, no preamble. End with 'Best regards,' then 'Havelock Support'.",
+          "maxTokens": 400,
+          "temperature": 0.3,
+          "includeMergedResponse": true
+        }
+      },
+      "id": "draft-reply",
+      "name": "Draft Reply (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        280,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "ticket_id",
+              "value": "={{ $('Parse Classification').item.json.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "customer_email",
+              "value": "={{ $('Parse Classification').item.json.customer_email }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "subject",
+              "value": "={{ $('Parse Classification').item.json.subject }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "body",
+              "value": "={{ $('Parse Classification').item.json.body }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "topic",
+              "value": "={{ $('Parse Classification').item.json.topic }}",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "urgency",
+              "value": "={{ $('Parse Classification').item.json.urgency }}",
+              "type": "string"
+            },
+            {
+              "id": "a8",
+              "name": "sentiment",
+              "value": "={{ $('Parse Classification').item.json.sentiment }}",
+              "type": "string"
+            },
+            {
+              "id": "a9",
+              "name": "summary",
+              "value": "={{ $('Parse Classification').item.json.summary }}",
+              "type": "string"
+            },
+            {
+              "id": "a10",
+              "name": "routed_to",
+              "value": "standard_queue",
+              "type": "string"
+            },
+            {
+              "id": "a11",
+              "name": "draft_reply",
+              "value": "={{ $json.merged_response }}",
+              "type": "string"
+            },
+            {
+              "id": "a12",
+              "name": "status",
+              "value": "auto_drafted",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-normal-row",
+      "name": "Build Row: Auto Drafted",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        500,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "tickets"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "body",
+              "displayName": "body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "topic",
+              "displayName": "topic",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "urgency",
+              "displayName": "urgency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sentiment",
+              "displayName": "sentiment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "routed_to",
+              "displayName": "routed_to",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "draft_reply",
+              "displayName": "draft_reply",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "sheets-log-standard-ticket",
+      "name": "Sheets: Log Standard Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        720,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: New Ticket": {
+      "main": [
+        [
+          {
+            "node": "Normalize Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Ticket": {
+      "main": [
+        [
+          {
+            "node": "Classify Ticket (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Ticket (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Needs Human Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Human Review?": {
+      "main": [
+        [
+          {
+            "node": "Notify On-Call (SMTP)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Draft Reply (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify On-Call (SMTP)": {
+      "main": [
+        [
+          {
+            "node": "Build Row: Needs Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Row: Needs Review": {
+      "main": [
+        [
+          {
+            "node": "Sheets: Log Urgent Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Reply (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Build Row: Auto Drafted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Row: Auto Drafted": {
+      "main": [
+        [
+          {
+            "node": "Sheets: Log Standard Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

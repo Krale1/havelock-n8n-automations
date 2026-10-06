@@ -1,0 +1,607 @@
+{
+  "name": "Havelock - Customer Onboarding",
+  "nodes": [
+    {
+      "id": "webhook-customer-signup",
+      "name": "Webhook: New Signup",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -880,
+        360
+      ],
+      "webhookId": "c4e81f6a-27b3-4d50-9a1e-8f2c6b43d7e5",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "customer-signup",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "notes": "A signup either happens or it does not - there is nothing to poll, so there is no schedule trigger on this workflow."
+    },
+    {
+      "id": "normalize-signup",
+      "name": "Normalize Signup",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -660,
+        360
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "n01",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "n02",
+              "name": "signup_id",
+              "value": "={{ $json.body.signup_id || 'SU-' + $now.toMillis() }}",
+              "type": "string"
+            },
+            {
+              "id": "n03",
+              "name": "company_name",
+              "value": "={{ $json.body.company_name || '(not given)' }}",
+              "type": "string"
+            },
+            {
+              "id": "n04",
+              "name": "contact_name",
+              "value": "={{ $json.body.contact_name || '(not given)' }}",
+              "type": "string"
+            },
+            {
+              "id": "n05",
+              "name": "contact_email",
+              "value": "={{ $json.body.contact_email || 'unknown@example.com' }}",
+              "type": "string"
+            },
+            {
+              "id": "n06",
+              "name": "employee_count",
+              "value": "={{ $json.body.employee_count || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "n07",
+              "name": "business_description",
+              "value": "={{ $json.body.business_description || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Mints timestamp and signup_id once. Both fan-out branches reuse them, so the CRM row and its task rows share a join key."
+    },
+    {
+      "id": "classify-signup",
+      "name": "Classify Signup (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        360
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-4-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Company: {{ $json.company_name }}\nContact: {{ $json.contact_name }}\nEmployees: {{ $json.employee_count }}\n\nWhat they wrote about their business:\n{{ $json.business_description }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You classify new signups for Havelock, which makes payroll and bookkeeping software for small businesses (5-50 staff) operating in the United States.\n\nYou are given a company name, an employee count, and what the person wrote about their business. Respond with ONLY valid JSON (no markdown fences, no explanation) with keys: onboarding_track, flag_for_human, flag_reason, welcome_email_draft, internal_summary.\n\nonboarding_track must be exactly one of:\n- standard = a US business paying salaried or hourly W-2 employees in a single state, with nothing unusual about how people are paid.\n- tipped_employees = staff who earn tips: restaurants, bars, cafes, salons, hotels. Tip credit and tip reporting change the setup.\n- multi_state_remote = employees working in more than one US state. Withholding has to be registered per state.\n- contractor_heavy = the workforce is mostly 1099 contractors rather than W-2 employees.\n- needs_review = see below.\n\nUse needs_review, with flag_for_human true and a flag_reason naming the actual issue, when ANY of these is true:\n- Anyone is employed outside the United States. Havelock does not run international payroll at all.\n- The description is too thin to classify: a single vague sentence, or nothing about how they pay people.\n- The business type is one Havelock does not serve: agricultural payroll, household or domestic employers, union shops under a collective bargaining agreement, or anyone needing certified payroll for government contracts.\n- Two tracks genuinely both apply and the description does not say which dominates.\n- Anything else you cannot resolve from what they actually wrote.\n\nA plausible-sounding guess is worse than an honest needs_review. Nobody is harmed by a signup that waits for a person. A restaurant put on the standard track gets its tip credit set up wrong and underpays its staff.\n\nflag_for_human: true whenever the track is needs_review, and also on a track you are confident about where something in the description still needs a person's attention. flag_reason: one sentence naming the specific issue; empty string when flag_for_human is false.\n\nwelcome_email_draft: 2-4 sentences, addressed to the contact by first name, signed \"The Havelock team\". Warm and plain, not saccharine. It must reference something concrete the person actually wrote - \"since you mentioned you run two locations\" is the bar, \"Welcome to Havelock!\" is not. Never state the onboarding track and never mention classification, flags or review. If the track is needs_review, acknowledge the signup warmly and say someone will be in touch to work out the right setup, without promising a timeline or a specific path. A person reads this draft and sends it; it is never sent automatically.\n\ninternal_summary: one sentence, max 25 words, for whoever picks this signup up.",
+          "maxTokens": 700,
+          "temperature": 0,
+          "includeMergedResponse": true
+        }
+      },
+      "notes": "The only model call in this workflow. It classifies and drafts; it never picks the checklist and never sends anything."
+    },
+    {
+      "id": "parse-classification",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        360
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Turn Claude's JSON into flat workflow fields.\n//\n// The model is told to return bare JSON. We never trust that blindly: fences,\n// stray prose, or an invented track must not break the run or - worse -\n// quietly become a real onboarding decision.\n\nconst TRACKS = [\n  'standard',\n  'tipped_employees',\n  'multi_state_remote',\n  'contractor_heavy',\n  'needs_review',\n];\n\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text).trim();\n  t = t.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();\n  const start = t.indexOf('{');\n  const end = t.lastIndexOf('}');\n  if (start === -1 || end === -1 || end <= start) return null;\n  try {\n    return JSON.parse(t.slice(start, end + 1));\n  } catch (err) {\n    return null;\n  }\n}\n\nfunction truthy(v) {\n  if (typeof v === 'boolean') return v;\n  return ['true', 'yes', '1'].includes(String(v ?? '').trim().toLowerCase());\n}\n\nconst signups = $('Normalize Signup').all();\nconst incoming = $input.all();\nconst results = [];\n\nfor (let i = 0; i < incoming.length; i++) {\n  const signup = signups[Math.min(i, signups.length - 1)].json;\n  const parsed = extractJson(incoming[i].json.merged_response);\n\n  // Fail safe. An unclassified signup goes to a person, never to a guessed\n  // track - not guessing is the entire point of this workflow.\n  if (!parsed) {\n    results.push({\n      json: {\n        ...signup,\n        onboarding_track: 'needs_review',\n        flag_for_human: true,\n        flag_reason: 'Automatic classification failed - model output was not valid JSON.',\n        internal_summary: 'Signup received but could not be classified automatically.',\n        welcome_email_draft: '(no draft - classification failed, write one by hand)',\n        status: 'needs_review',\n      },\n      pairedItem: { item: i },\n    });\n    continue;\n  }\n\n  const raw = String(parsed.onboarding_track ?? '').trim().toLowerCase();\n  const known = TRACKS.includes(raw);\n  const track = known ? raw : 'needs_review';\n\n  let flag = truthy(parsed.flag_for_human);\n  let reason = String(parsed.flag_reason ?? '').trim();\n\n  // A track outside the allowed set is itself a reason to involve a person.\n  if (!known) {\n    flag = true;\n    reason = reason || ('Model returned an unrecognised track: \"' + raw + '\".');\n  }\n\n  // needs_review and flag_for_human have to agree. Picking needs_review is\n  // the model saying it cannot decide - that is a flag, whatever it wrote in\n  // the boolean.\n  if (track === 'needs_review') {\n    flag = true;\n    reason = reason || 'Classified as needs_review without a stated reason.';\n  }\n\n  // A flag with no reason is useless to whoever picks this up.\n  if (flag && !reason) reason = 'Flagged by the model without a stated reason.';\n  if (!flag) reason = '';\n\n  results.push({\n    json: {\n      ...signup,\n      onboarding_track: track,\n      flag_for_human: flag,\n      flag_reason: reason,\n      internal_summary:\n        String(parsed.internal_summary ?? '').trim() || 'No summary returned.',\n      welcome_email_draft:\n        String(parsed.welcome_email_draft ?? '').trim() ||\n        '(no draft returned - write one by hand)',\n      status: flag ? 'needs_review' : 'auto_drafted',\n    },\n    pairedItem: { item: i },\n  });\n}\n\nreturn results;"
+      }
+    },
+    {
+      "id": "build-customer-row",
+      "name": "Build Customer Row",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        40,
+        140
+      ],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c01",
+              "name": "timestamp",
+              "value": "={{ $json.timestamp }}",
+              "type": "string"
+            },
+            {
+              "id": "c02",
+              "name": "signup_id",
+              "value": "={{ $json.signup_id }}",
+              "type": "string"
+            },
+            {
+              "id": "c03",
+              "name": "company_name",
+              "value": "={{ $json.company_name }}",
+              "type": "string"
+            },
+            {
+              "id": "c04",
+              "name": "contact_name",
+              "value": "={{ $json.contact_name }}",
+              "type": "string"
+            },
+            {
+              "id": "c05",
+              "name": "contact_email",
+              "value": "={{ $json.contact_email }}",
+              "type": "string"
+            },
+            {
+              "id": "c06",
+              "name": "employee_count",
+              "value": "={{ $json.employee_count }}",
+              "type": "string"
+            },
+            {
+              "id": "c07",
+              "name": "business_description",
+              "value": "={{ $json.business_description }}",
+              "type": "string"
+            },
+            {
+              "id": "c08",
+              "name": "onboarding_track",
+              "value": "={{ $json.onboarding_track }}",
+              "type": "string"
+            },
+            {
+              "id": "c09",
+              "name": "flag_for_human",
+              "value": "={{ $json.flag_for_human }}",
+              "type": "string"
+            },
+            {
+              "id": "c10",
+              "name": "flag_reason",
+              "value": "={{ $json.flag_reason }}",
+              "type": "string"
+            },
+            {
+              "id": "c11",
+              "name": "internal_summary",
+              "value": "={{ $json.internal_summary }}",
+              "type": "string"
+            },
+            {
+              "id": "c12",
+              "name": "welcome_email_draft",
+              "value": "={{ $json.welcome_email_draft }}",
+              "type": "string"
+            },
+            {
+              "id": "c13",
+              "name": "status",
+              "value": "={{ $json.status }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "sheets-append-customer",
+      "name": "Sheets: Append Customer",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        260,
+        140
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_ONBOARDING_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "customers"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "signup_id",
+              "displayName": "signup_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contact_name",
+              "displayName": "contact_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contact_email",
+              "displayName": "contact_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "employee_count",
+              "displayName": "employee_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_description",
+              "displayName": "business_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "onboarding_track",
+              "displayName": "onboarding_track",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flag_for_human",
+              "displayName": "flag_for_human",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flag_reason",
+              "displayName": "flag_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "internal_summary",
+              "displayName": "internal_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "welcome_email_draft",
+              "displayName": "welcome_email_draft",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "Exactly one row per signup. This branch runs beside the checklist branch, not downstream of it - downstream it would receive one item per task and write the same customer four times."
+    },
+    {
+      "id": "respond-to-signup",
+      "name": "Respond to Signup",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        480,
+        140
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"received\": true}",
+        "options": {}
+      },
+      "notes": "A fixed acknowledgement. The track, the flag and the draft email are internal - the person filling in the form never sees any of it."
+    },
+    {
+      "id": "expand-checklist",
+      "name": "Expand Checklist",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        40,
+        380
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// One signup becomes one row per starter task.\n//\n// This is a lookup, not a judgement, so it is deliberately not a second model\n// call. The track has already been decided; which starter tasks belong to a\n// known track is fixed knowledge, and it belongs in code where it can be read\n// and changed without re-testing a prompt.\n//\n// needs_review has its own list on purpose. Without one, the flagged signup -\n// the row that most needs someone to act - would be the only one that\n// produced no tasks at all.\n\nconst CHECKLISTS = {\n  standard: [\n    'Confirm pay schedule and first pay date',\n    'Collect employee records and W-4s',\n    'Verify state tax registration for their filing state',\n    'Book 20-minute setup call',\n  ],\n  tipped_employees: [\n    'Confirm tip-pooling method and who takes part',\n    'Set up tipped minimum wage and tip credit for their state',\n    'Configure declared-tip reporting on each pay run',\n    'Book 20-minute setup call',\n  ],\n  multi_state_remote: [\n    'List every state an employee actually works in',\n    'Register for withholding in each new state',\n    'Set reciprocity and local tax rules per employee',\n    'Book 30-minute multi-state setup call',\n  ],\n  contractor_heavy: [\n    'Separate 1099 contractors from W-2 employees in the roster',\n    'Collect W-9s and confirm payment method for each contractor',\n    'Enable 1099-NEC year-end filing',\n    'Book 20-minute setup call',\n  ],\n  needs_review: [\n    'Do not begin setup - this signup needs a human look first',\n    'Read the flag reason and decide which track applies',\n    'Reply to the customer once the track is confirmed',\n  ],\n};\n\nconst incoming = $input.all();\nconst rows = [];\n\nfor (let i = 0; i < incoming.length; i++) {\n  const s = incoming[i].json;\n  const tasks = CHECKLISTS[s.onboarding_track] || CHECKLISTS.needs_review;\n\n  for (const task of tasks) {\n    rows.push({\n      json: {\n        // Same timestamp and id as the customers row. The id is what the ops\n        // console joins on - company name would collide the moment the same\n        // demo signup is submitted twice.\n        timestamp: s.timestamp,\n        signup_id: s.signup_id,\n        company_name: s.company_name,\n        task: task,\n        done: 'no',\n      },\n      pairedItem: { item: i },\n    });\n  }\n}\n\nreturn rows;"
+      },
+      "notes": "A lookup table, not a second Claude call. The track is already known; the tasks for a known track are fixed."
+    },
+    {
+      "id": "sheets-append-tasks",
+      "name": "Sheets: Append Tasks",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        260,
+        380
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_ONBOARDING_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "onboarding_tasks"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "signup_id",
+              "displayName": "signup_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "task",
+              "displayName": "task",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "done",
+              "displayName": "done",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "notes": "Three or four rows per signup. The Sheets node writes one row per incoming item, which is what makes the expansion above a real fan-out."
+    },
+    {
+      "id": "notify-onboarding",
+      "name": "Notify Onboarding Team (SMTP)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        40,
+        620
+      ],
+      "disabled": true,
+      "parameters": {
+        "fromEmail": "onboarding-bot@havelock.example",
+        "toEmail": "onboarding@havelock.example",
+        "subject": "=[New signup] {{ $json.company_name }} - {{ $json.onboarding_track }}{{ $json.flag_for_human ? ' (NEEDS REVIEW)' : '' }}",
+        "emailFormat": "text",
+        "text": "=A new signup landed.\n\nCompany: {{ $json.company_name }}\nContact: {{ $json.contact_name }} <{{ $json.contact_email }}>\nEmployees: {{ $json.employee_count }}\n\nTrack: {{ $json.onboarding_track }}\nNeeds a human: {{ $json.flag_for_human }}\n{{ $json.flag_for_human ? 'Why: ' + $json.flag_reason : '' }}\n\n{{ $json.internal_summary }}\n\nA welcome email has been drafted on the customers row. Nothing has been sent to the customer.",
+        "options": {}
+      },
+      "notes": "Disabled for the demo - no SMTP credential. Wired to show the third destination of the fan-out. It tells the team a signup landed; it never emails the customer."
+    }
+  ],
+  "connections": {
+    "Webhook: New Signup": {
+      "main": [
+        [
+          {
+            "node": "Normalize Signup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Signup": {
+      "main": [
+        [
+          {
+            "node": "Classify Signup (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Signup (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Build Customer Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Expand Checklist",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Onboarding Team (SMTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Customer Row": {
+      "main": [
+        [
+          {
+            "node": "Sheets: Append Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets: Append Customer": {
+      "main": [
+        [
+          {
+            "node": "Respond to Signup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Checklist": {
+      "main": [
+        [
+          {
+            "node": "Sheets: Append Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,68 @@
+[
+  {
+    "signup_id": "SU-DEMO-01",
+    "company_name": "Barrow & Finch Dental",
+    "contact_name": "Dana Whitlock",
+    "contact_email": "dana@barrowfinch.example",
+    "employee_count": "11",
+    "business_description": "We're a two-dentist practice in Akron, Ohio. Eleven people on payroll — three hygienists, four assistants, two at the front desk, plus the two of us. Everyone's salaried except the front desk, who are hourly. We pay every two weeks and we've been doing it in a spreadsheet, which is starting to hurt.",
+    "_expected": "standard — single state, W-2 staff, nothing unusual. No flag.",
+    "_expected_track": "standard",
+    "_expected_flag": false
+  },
+  {
+    "signup_id": "SU-DEMO-02",
+    "company_name": "The Lamplighter",
+    "contact_name": "Marco Ruiz",
+    "contact_email": "marco@lamplighter.example",
+    "employee_count": "34",
+    "business_description": "Neighbourhood restaurant and bar in Providence, going on nine years. 34 staff across two shifts — kitchen is hourly, front of house works on tips and we pool them per shift between servers and bussers. Our current provider handles tip reporting badly and reconciling declared tips every fortnight takes an entire morning.",
+    "_expected": "tipped_employees — tip pooling and declared tips are the whole story here. No flag.",
+    "_expected_track": "tipped_employees",
+    "_expected_flag": false
+  },
+  {
+    "signup_id": "SU-DEMO-03",
+    "company_name": "Ridgeline Design Co",
+    "contact_name": "Priya Anand",
+    "contact_email": "priya@ridgelinedesign.example",
+    "employee_count": "17",
+    "business_description": "Small product design studio, fully remote since 2021. 17 full-time employees spread across Oregon, Texas, Illinois, North Carolina and New York. Everyone's W-2 and salaried. The state registrations are the part we keep getting wrong — we hired someone in Illinois last year and didn't register for withholding until the accountant caught it in March.",
+    "_expected": "multi_state_remote — five states, W-2, registration is the stated pain. No flag.",
+    "_expected_track": "multi_state_remote",
+    "_expected_flag": false
+  },
+  {
+    "signup_id": "SU-DEMO-04",
+    "company_name": "Halden Freight Services",
+    "contact_name": "Ty Okafor",
+    "contact_email": "ty@haldenfreight.example",
+    "employee_count": "23",
+    "business_description": "Regional freight brokerage out of Memphis. Three of us are on the books as employees; the other twenty are owner-operator drivers we pay as 1099 contractors, mostly weekly and by the load. We need the 1099-NEC filing at year end to stop being a two-week fire drill.",
+    "_expected": "contractor_heavy — 20 of 23 are 1099. No flag.",
+    "_expected_track": "contractor_heavy",
+    "_expected_flag": false
+  },
+  {
+    "signup_id": "SU-DEMO-05",
+    "company_name": "Corvid Analytics",
+    "contact_name": "Elena Vasquez",
+    "contact_email": "elena@corvidanalytics.example",
+    "employee_count": "14",
+    "business_description": "Data consultancy, 14 people. Nine are W-2 in Colorado. The other five are full-time employees too, but they're in Lisbon and Toronto — we set up a Portuguese entity last year and the two in Canada are on a local contract. We'd like all of it in one place if that's possible.",
+    "_expected": "needs_review, flagged — employees outside the US. Havelock does not run international payroll. The reason must name that, not invent a track for the nine in Colorado.",
+    "_expected_track": "needs_review",
+    "_expected_flag": true
+  },
+  {
+    "signup_id": "SU-DEMO-06",
+    "company_name": "Stennet Group",
+    "contact_name": "R. Stennet",
+    "contact_email": "r.stennet@stennetgroup.example",
+    "employee_count": "8",
+    "business_description": "Small business, looking for payroll software.",
+    "_expected": "needs_review, flagged — nothing here to classify on. This is the 'don't force a guess' guardrail: eight employees and a generic sentence could be any of the four tracks.",
+    "_expected_track": "needs_review",
+    "_expected_flag": true
+  }
+]

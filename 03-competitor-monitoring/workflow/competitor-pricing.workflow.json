@@ -1,0 +1,475 @@
+{
+  "name": "Havelock - Competitor Pricing Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1160,
+        200
+      ],
+      "notes": "A pricing page changes monthly, not by the minute. The console button drives demos."
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "pricing-check-now",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-check-now",
+      "name": "Webhook: Check Now",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1160,
+        400
+      ],
+      "webhookId": "d51c7a94-3e62-4f18-9b07-6a2e8d40c3b5",
+      "notes": "GET /webhook/pricing-check-now - lets the ops console force a check on demand."
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/mock-competitor-pricing.html",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "fetch-page",
+      "name": "Fetch Pricing Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -930,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "host.docker.internal, not localhost: n8n is in Docker. Continues on error so a dead page still logs."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_YOUR_PRICING_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "pricing_log"
+        },
+        "options": {}
+      },
+      "id": "read-pricing-log",
+      "name": "Read Pricing Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -700,
+        300
+      ],
+      "alwaysOutputData": true,
+      "notes": "The log is the memory. The snapshot column holds the last version of the page text."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Turn the fetched page into comparable text, find the last snapshot for\n// this target, and decide whether this check actually needs the model.\n//\n// Three of the four outcomes are settled here without spending a call:\n// a failed fetch, a first-ever observation, and a page whose text has not\n// changed at all. The model is only worth paying for when the text differs\n// and something has to judge whether the difference matters.\n\nconst TARGET = 'Quillbeck - pricing';\nconst MAX_SNAPSHOT = 45000;   // Google Sheets caps a cell at 50k characters\n\n// Visible text only. Raw HTML would make every class-name tweak look like a\n// change, and would cost roughly ten times the tokens.\nfunction toText(html) {\n  if (typeof html !== 'string') return '';\n  return html\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n    .replace(/<\\s*br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/(p|li|h[1-6]|div|tr|blockquote|article|section|footer|header)\\s*>/gi, '\\n')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/&lt;/gi, '<')\n    .replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;/gi, \"'\")\n    .split('\\n')\n    .map((line) => line.replace(/[ \\t\\u00a0]+/g, ' ').trim())\n    .filter(Boolean)\n    .join('\\n');\n}\n\n// --- what did we just fetch? --------------------------------------------\n\nlet fetch_ok = true;\nlet fetch_error = '';\nlet new_text = '';\n\ntry {\n  const probe = $('Fetch Pricing Page').first().json;\n  if (!probe || probe.error) {\n    fetch_ok = false;\n    fetch_error = 'could not fetch the page: ' +\n      (probe && probe.error ? String(JSON.stringify(probe.error)).slice(0, 180) : 'no response');\n  } else {\n    new_text = toText(probe.data ?? probe.body ?? '');\n    if (!new_text) {\n      fetch_ok = false;\n      fetch_error = 'the page was fetched but contained no readable text';\n    }\n  }\n} catch (err) {\n  fetch_ok = false;\n  fetch_error = 'the fetch node produced no output: ' + err.message;\n}\n\n// --- what did we see last time? -----------------------------------------\n\nconst history = $input\n  .all()\n  .map((item) => item.json)\n  .filter((row) => row && row.target && row.snapshot);\n\nlet last = null;\nfor (let i = history.length - 1; i >= 0; i--) {\n  if (String(history[i].target).trim() === TARGET) { last = history[i]; break; }\n}\n\nconst prev_text = last ? String(last.snapshot) : '';\nconst is_first = !last;\n\n// --- does this need judgement? ------------------------------------------\n\nlet needs_model = false;\nlet verdict = null;\n\nif (!fetch_ok) {\n  verdict = {\n    changed: true,\n    change_type: 'check_failed',\n    summary: 'The competitor pricing page could not be read on this check.',\n    note: fetch_error,\n  };\n} else if (is_first) {\n  verdict = {\n    changed: false,\n    change_type: 'none',\n    summary: 'Baseline snapshot captured. Nothing to compare against yet.',\n    note: 'baseline - first observation of this target',\n  };\n} else if (prev_text === new_text) {\n  verdict = {\n    changed: false,\n    change_type: 'none',\n    summary: 'No change to the page text.',\n    note: 'page text identical to the last snapshot - no model call needed',\n  };\n} else {\n  needs_model = true;\n}\n\n// Keep the previous snapshot if the fetch failed, so one bad check does not\n// erase the baseline and make the next check look like a first run.\nconst snapshot = (fetch_ok ? new_text : prev_text).slice(0, MAX_SNAPSHOT);\n\nreturn [{\n  json: { target: TARGET, needs_model, verdict, prev_text, new_text, snapshot, fetch_ok },\n}];"
+      },
+      "id": "prepare-comparison",
+      "name": "Prepare Comparison",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-needs-model",
+              "leftValue": "={{ $json.needs_model }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "if-needs-model",
+      "name": "Needs Judgement?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -250,
+        300
+      ],
+      "notes": "Only spend a model call when the page text actually differs."
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-4-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=PREVIOUS VERSION OF THE PAGE:\n---\n{{ $json.prev_text }}\n---\n\nCURRENT VERSION OF THE PAGE:\n---\n{{ $json.new_text }}\n---",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You compare two versions of a competitor's pricing page and decide whether anything MEANINGFUL changed.\n\nRespond with ONLY valid JSON. No markdown fences, no commentary.\n\n{\n  \"changed\": true or false,\n  \"change_type\": \"price_change\" | \"plan_added\" | \"plan_removed\" | \"feature_change\" | \"none\",\n  \"summary\": \"one plain-English sentence naming the specific change, or saying nothing meaningful changed\",\n  \"confidence_notes\": \"\"\n}\n\nMEANINGFUL (changed: true):\n- A price changes. $19 -> $24 is meaningful, however small.\n- A plan is added or removed.\n- A plan is renamed.\n- A feature is added to, or removed from, a tier's list.\n- A stated limit changes. \"Up to 3 employees\" -> \"Up to 5 employees\" is meaningful.\n- Billing terms change: a free trial length, a discount, a currency.\n\nCOSMETIC (changed: false):\n- Marketing copy and taglines reworded without changing what is offered.\n- A testimonial changing, or a quote being swapped.\n- Social-proof counters: \"Trusted by 500+\" -> \"Trusted by 650+\".\n- A copyright year, a date, or a timestamp.\n- A feature bullet reworded with the same meaning: \"Priority email support\" ->\n  \"Priority support by email\" is NOT a change.\n- Ordering, spacing, punctuation, or styling.\n\nRules:\n- Judge only what is written. Never infer intent, strategy, or a change you cannot see in the text.\n- If a wording change is genuinely ambiguous - you cannot tell whether it reflects a real change to\n  what is offered - return changed: true with change_type \"feature_change\" and say why in\n  confidence_notes. Flag it for a human rather than quietly deciding it does not matter.\n- If several things changed, report the most commercially significant one in change_type and mention\n  the rest in summary.\n- confidence_notes must be an empty string when the comparison was clear-cut.",
+          "maxTokens": 400,
+          "temperature": 0,
+          "includeMergedResponse": true
+        }
+      },
+      "id": "judge-change",
+      "name": "Judge Change (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        -30,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Produce the log row, from either the model's verdict or the one that was\n// already settled upstream without a model call.\n\nconst ALLOWED = ['price_change', 'plan_added', 'plan_removed', 'feature_change', 'none'];\n\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text).trim();\n  t = t.replace(/^```(?:json)?/i, \"\").replace(/```$/, \"\").trim();\n  const start = t.indexOf('{');\n  const end = t.lastIndexOf('}');\n  if (start === -1 || end === -1 || end <= start) return null;\n  try { return JSON.parse(t.slice(start, end + 1)); } catch (err) { return null; }\n}\n\nconst prep = $('Prepare Comparison').first().json;\nlet verdict;\n\nif (!prep.needs_model) {\n  verdict = prep.verdict;\n} else {\n  const parsed = extractJson($input.first().json.merged_response);\n\n  if (!parsed) {\n    // We know the page changed - the text differed - but not whether it\n    // mattered. That is exactly when a human should look.\n    verdict = {\n      changed: true,\n      change_type: 'check_failed',\n      summary: 'The page changed, but the comparison could not be interpreted.',\n      note: 'model response was not valid JSON',\n    };\n  } else {\n    const type = ALLOWED.includes(String(parsed.change_type || '').trim())\n      ? String(parsed.change_type).trim()\n      : 'none';\n    const changed = parsed.changed === true;\n    const notes = String(parsed.confidence_notes || '').trim();\n\n    verdict = {\n      changed,\n      change_type: changed ? type : 'none',\n      summary: String(parsed.summary || '').trim() || 'No summary returned.',\n      note: notes ? 'model uncertain: ' + notes : 'page text differed - judged by model',\n    };\n  }\n}\n\nreturn [{\n  json: {\n    timestamp: new Date().toISOString(),\n    target: prep.target,\n    changed: verdict.changed,\n    change_type: verdict.change_type,\n    summary: verdict.summary,\n    note: verdict.note,\n    snapshot: prep.snapshot,\n  },\n}];"
+      },
+      "id": "build-log-row",
+      "name": "Build Log Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-changed",
+              "leftValue": "={{ $json.changed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false,
+        "options": {}
+      },
+      "id": "if-changed",
+      "name": "Change Detected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "monitor@havelock.example",
+        "toEmail": "product@havelock.example",
+        "subject": "=[COMPETITOR] {{ $json.target }} - {{ $json.change_type }}",
+        "emailFormat": "text",
+        "text": "=A competitor pricing page changed in a way that looks meaningful.\n\nTarget: {{ $json.target }}\nType: {{ $json.change_type }}\nAt: {{ $json.timestamp }}\n\n{{ $json.summary }}\n\n{{ $json.note }}\n\nCosmetic changes do not trigger this alert.",
+        "options": {}
+      },
+      "id": "notify-product",
+      "name": "Notify Product Team (SMTP)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        660,
+        180
+      ],
+      "disabled": true,
+      "notes": "Disabled for the demo - no SMTP credential. Wired to show the alert path."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_YOUR_PRICING_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "pricing_log"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "target",
+              "displayName": "target",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "changed",
+              "displayName": "changed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "change_type",
+              "displayName": "change_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "note",
+              "displayName": "note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "snapshot",
+              "displayName": "snapshot",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "append-log-row",
+      "name": "Append Log Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        900,
+        300
+      ],
+      "notes": "Every check is logged, changed or not - that is what proves the monitor is running."
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pricing Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Check Now": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pricing Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Pricing Page": {
+      "main": [
+        [
+          {
+            "node": "Read Pricing Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Pricing Log": {
+      "main": [
+        [
+          {
+            "node": "Prepare Comparison",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Comparison": {
+      "main": [
+        [
+          {
+            "node": "Needs Judgement?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Judgement?": {
+      "main": [
+        [
+          {
+            "node": "Judge Change (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Log Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Judge Change (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Build Log Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Log Row": {
+      "main": [
+        [
+          {
+            "node": "Change Detected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Change Detected?": {
+      "main": [
+        [
+          {
+            "node": "Notify Product Team (SMTP)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append Log Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Product Team (SMTP)": {
+      "main": [
+        [
+          {
+            "node": "Append Log Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

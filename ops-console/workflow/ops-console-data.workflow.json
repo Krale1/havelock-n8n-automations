@@ -1,0 +1,142 @@
+{
+  "name": "Havelock - Ops Console Data (read-only)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ops-console-data",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-console-data",
+      "name": "Webhook: Console Data",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -720,
+        300
+      ],
+      "webhookId": "f2a90c47-6b31-4e58-8d12-3c7a9e150b6f",
+      "notes": "GET /webhook/ops-console-data?project=tickets|invoices"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Maps a short project key to a sheet. The map lives here, inside n8n, so\n// the browser never receives a spreadsheet ID - it only ever sends\n// ?project=tickets or ?project=invoices.\n//\n// It is also a whitelist: without it this webhook would happily read any\n// spreadsheet the connected Google account can see.\n\nconst SHEETS = {\n  tickets:  { sheet_id: \"PASTE_TICKET_SHEET_ID_HERE\", tab: \"tickets\" },\n  invoices: { sheet_id: \"PASTE_LEDGER_SHEET_ID_HERE\", tab: \"ledger\" },\n  pricing:  { sheet_id: \"PASTE_PRICING_SHEET_ID_HERE\", tab: \"pricing_log\" },\n\n  // Project 4 writes two sheets, so it reads as two keys. The console shows\n  // \"onboarding\" in its table and fetches \"onboarding_tasks\" separately to\n  // fill in each row's checklist.\n  onboarding:       { sheet_id: \"PASTE_ONBOARDING_SHEET_ID_HERE\", tab: \"customers\" },\n  // Task rows accumulate three to four times faster than signups, so this\n  // one needs a much higher cap - at 50 the checklist would silently vanish\n  // from older signups.\n  onboarding_tasks: { sheet_id: \"PASTE_ONBOARDING_SHEET_ID_HERE\", tab: \"onboarding_tasks\", max_rows: 400 },\n};\n\nconst query = $input.first().json.query || {};\nconst key = String(query.project || \"tickets\").toLowerCase().trim();\nconst cfg = SHEETS[key];\n\nif (!cfg) {\n  throw new Error(\n    \"Unknown project '\" + key + \"'. Expected one of: \" + Object.keys(SHEETS).join(\", \")\n  );\n}\n\nreturn [{ json: { project: key, sheet_id: cfg.sheet_id, tab: cfg.tab, max_rows: cfg.max_rows || 50 } }];"
+      },
+      "id": "resolve-project",
+      "name": "Resolve Project",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "={{ $json.tab }}"
+        },
+        "options": {}
+      },
+      "id": "sheets-read",
+      "name": "Sheets: Read Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -280,
+        300
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Collapse the sheet rows into a single response item.\n//\n// Single item on purpose: with responseMode \"responseNode\", a node that\n// emits zero items stops the chain and the webhook never replies - the\n// caller just hangs. Always returning one item means an empty sheet gives\n// an empty list instead of a timeout.\n\n// Per-project, because the onboarding checklist sheet fills far faster than\n// the others and needs a bigger window than a log of signups does.\nconst resolved = $(\"Resolve Project\").first().json;\nconst MAX_ROWS = resolved.max_rows || 50;\n\nconst project = resolved.project;\n\nconst rows = $input\n  .all()\n  .map((item) => item.json)\n  .filter((row) => row && Object.keys(row).length > 0 && Object.values(row).some((v) => v !== \"\" && v !== null));\n\n// The sheet is append-only, so the newest row is the last one.\nrows.reverse();\n\nreturn [{ json: { project, count: rows.length, rows: rows.slice(0, MAX_ROWS) } }];"
+      },
+      "id": "shape-rows",
+      "name": "Shape Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-json",
+      "name": "Respond with Rows",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        160,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Console Data": {
+      "main": [
+        [
+          {
+            "node": "Resolve Project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Project": {
+      "main": [
+        [
+          {
+            "node": "Sheets: Read Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheets: Read Rows": {
+      "main": [
+        [
+          {
+            "node": "Shape Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Rows": {
+      "main": [
+        [
+          {
+            "node": "Respond with Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

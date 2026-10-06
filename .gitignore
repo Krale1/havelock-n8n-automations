@@ -1,0 +1,18 @@
+# Secrets and local config
+.env
+*.env
+credentials*
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Working notes kept outside the repo; listed here so a stray copy is never
+# committed by accident.
+_private-notes/

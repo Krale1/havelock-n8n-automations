@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232f5bd0'/></svg>">
+<title>Havelock Support</title>
+<!--
+  The customer's front door.
+
+  Deliberately self-contained and deliberately unlike the ops console: a
+  customer should have no sense that an internal tool exists, let alone that
+  a log of everyone's tickets is one tab away.
+
+  It only ever POSTs. It never reads the log, never shows a classification,
+  and never reveals what happens to the message after it is sent.
+-->
+<style>
+  :root {
+    --brand:#2f5bd0;
+    --ink:#161c22;
+    --mid:#5b646e;
+    --soft:#8b939c;
+    --line:#e2e6ea;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0;
+    min-height:100vh;
+    background:#eef1f6;
+    color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:48px 20px 40px;
+  }
+  .brand {
+    display:flex; align-items:center; gap:10px;
+    margin-bottom:26px;
+  }
+  .brand__mark {
+    width:26px; height:26px; border-radius:7px;
+    background:linear-gradient(135deg,#2f5bd0,#5b8def);
+  }
+  .brand__name { font-size:19px; font-weight:680; letter-spacing:-.015em; }
+
+  .card {
+    width:100%; max-width:520px;
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:32px 30px 30px;
+    box-shadow:0 1px 2px rgba(16,24,32,.04), 0 8px 30px rgba(16,24,32,.06);
+  }
+  h1 { margin:0 0 6px; font-size:23px; letter-spacing:-.02em; }
+  .lede { margin:0 0 26px; color:var(--mid); font-size:15px; }
+
+  label { display:block; margin-bottom:18px; }
+  .label { display:block; font-size:14px; font-weight:600; margin-bottom:6px; }
+  input, textarea {
+    width:100%; font:inherit; color:var(--ink);
+    padding:11px 13px;
+    border:1px solid #d5dae0; border-radius:9px; background:#fff;
+  }
+  input:focus, textarea:focus {
+    outline:3px solid rgba(47,91,208,.18);
+    outline-offset:0;
+    border-color:var(--brand);
+  }
+  textarea { min-height:150px; resize:vertical; }
+
+  button {
+    width:100%; font:inherit; font-weight:650; font-size:15.5px;
+    color:#fff; background:var(--brand);
+    border:0; border-radius:9px; padding:13px;
+    cursor:pointer;
+  }
+  button:hover:not(:disabled) { background:#2a51bb; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+
+  .error {
+    margin-top:16px; padding:11px 13px;
+    background:#fdeceb; border:1px solid #f2c6c2; border-radius:9px;
+    color:#8a2a22; font-size:14.5px;
+  }
+
+  /* confirmation replaces the form entirely */
+  .done { text-align:center; padding:14px 0 6px; }
+  .done__tick {
+    width:46px; height:46px; margin:0 auto 16px;
+    border-radius:50%; background:#e6f5ec;
+    display:flex; align-items:center; justify-content:center;
+    color:#17663a; font-size:23px; font-weight:700;
+  }
+  .done h2 { margin:0 0 8px; font-size:19px; letter-spacing:-.01em; }
+  .done p { margin:0; color:var(--mid); font-size:15px; }
+
+  .foot { margin-top:22px; color:var(--soft); font-size:12.5px; text-align:center; }
+
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+
+  <div class="brand">
+    <span class="brand__mark" aria-hidden="true"></span>
+    <span class="brand__name">Havelock Support</span>
+  </div>
+
+  <main class="card">
+
+    <div id="form-state">
+      <h1>Get in touch</h1>
+      <p class="lede">Having an issue? Send us a message and we'll get back to you.</p>
+
+      <form id="support-form" autocomplete="on" novalidate>
+        <label>
+          <span class="label">Your email</span>
+          <input type="email" id="customer_email" name="customer_email"
+                 placeholder="you@yourbusiness.com" required>
+        </label>
+
+        <label>
+          <span class="label">Subject</span>
+          <input type="text" id="subject" name="subject"
+                 placeholder="What's this about?" required>
+        </label>
+
+        <label>
+          <span class="label">Message</span>
+          <textarea id="body" name="body"
+                    placeholder="Tell us what's happening and we'll take a look." required></textarea>
+        </label>
+
+        <button type="submit" id="send">Send message</button>
+      </form>
+
+      <div class="error" id="error" hidden></div>
+    </div>
+
+    <div id="done-state" hidden>
+      <div class="done">
+        <div class="done__tick" aria-hidden="true">✓</div>
+        <h2>Thanks — we've got your message.</h2>
+        <p>Someone from our team will follow up by email.</p>
+      </div>
+    </div>
+
+  </main>
+
+  <p class="foot">Havelock is a fictional company, used for a demo.</p>
+
+<script>
+'use strict';
+
+// Same endpoint the internal tooling uses, through the same local proxy.
+// No new workflow - this is just another front door to the one that exists.
+const ENDPOINT = '/webhook/ticket-triage';
+
+const form = document.getElementById('support-form');
+const button = document.getElementById('send');
+const errorBox = document.getElementById('error');
+
+function fail(message) {
+  errorBox.textContent = message;
+  errorBox.hidden = false;
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  errorBox.hidden = true;
+
+  const payload = {
+    customer_email: document.getElementById('customer_email').value.trim(),
+    subject: document.getElementById('subject').value.trim(),
+    body: document.getElementById('body').value.trim(),
+  };
+
+  if (!payload.customer_email || !payload.subject || !payload.body) {
+    return fail('Please fill in all three fields before sending.');
+  }
+
+  button.disabled = true;
+  button.textContent = 'Sending…';
+
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    // The workflow replies with the row it wrote. We deliberately ignore it:
+    // the customer sees that we received the message, and nothing else.
+    if (!res.ok) throw new Error('status ' + res.status);
+
+    document.getElementById('form-state').hidden = true;
+    document.getElementById('done-state').hidden = false;
+  } catch (err) {
+    // Never pretend it worked. If it did not send, say so.
+    fail('Something went wrong sending your message. Please try again.');
+    button.disabled = false;
+    button.textContent = 'Send message';
+  }
+});
+</script>
+</body>
+</html>

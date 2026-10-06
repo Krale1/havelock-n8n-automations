@@ -1,0 +1,366 @@
+{
+  "name": "Havelock - Invoice Extraction & Validation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice-intake",
+        "responseMode": "lastNode",
+        "options": {
+          "binaryData": true,
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "webhook-invoice-intake",
+      "name": "Webhook: Invoice Intake",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -760,
+        300
+      ],
+      "webhookId": "c4e81b6a-2f57-4d93-9a10-7e2c5b84f0d1",
+      "notes": "Receives the raw PDF as the request body. Filename arrives as ?source_file="
+    },
+    {
+      "parameters": {
+        "resource": "document",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-4-5"
+        },
+        "text": "You are an invoice data extraction assistant for a bookkeeping system.\n\nRead this invoice or receipt and return ONLY valid JSON. No markdown fences, no commentary before or after.\n\nReturn exactly these keys:\n{\n  \"vendor_name\": string or null,\n  \"invoice_number\": string or null,\n  \"invoice_date\": string or null,\n  \"due_date\": string or null,\n  \"currency\": string or null,\n  \"subtotal\": number or null,\n  \"tax_amount\": number or null,\n  \"total_amount\": number or null,\n  \"line_items\": [ { \"description\": string, \"quantity\": number or null, \"unit_price\": number or null, \"amount\": number or null } ],\n  \"confidence_notes\": string\n}\n\nRules:\n- If you cannot read a field confidently, set it to null and say why in confidence_notes. Never guess and never invent a value.\n- Transcribe every number exactly as printed. Do NOT correct arithmetic that looks wrong: if the line items do not add up to the stated subtotal, report both exactly as they appear. Spotting that is not your job.\n- Amounts are plain numbers: no currency symbols, no thousands separators.\n- Dates as YYYY-MM-DD where the document makes the date unambiguous. If it does not, set null and note it.\n- currency as an ISO code such as USD.\n- If the document shows no tax line at all, set tax_amount to 0 and subtotal equal to total_amount.\n- If there are no itemised lines, return an empty array for line_items.\n- confidence_notes must be an empty string \"\" when every field was clearly legible.",
+        "inputType": "binary",
+        "binaryPropertyName": "data",
+        "simplify": true,
+        "options": {
+          "maxTokens": 800
+        }
+      },
+      "id": "extract-invoice",
+      "name": "Extract Invoice Data (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        -520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Validate what Claude extracted. The model transcribes; this node decides.\n// Every check runs in code here, on purpose - the point of the workflow is\n// that an invoice is not trusted just because an AI read it confidently.\n\nconst REVIEW_THRESHOLD = 5000;   // currency units - see README on the single-currency assumption\nconst TOLERANCE = 0.02;          // absolute, to absorb rounding on tax lines\n\nfunction firstText(content) {\n  if (!Array.isArray(content)) return \"\";\n  const block = content.find((c) => c && c.type === \"text\");\n  return block && typeof block.text === \"string\" ? block.text : \"\";\n}\n\nfunction extractJson(text) {\n  if (!text) return null;\n  let t = String(text).trim();\n  t = t.replace(/^```(?:json)?/i, \"\").replace(/```$/, \"\").trim();\n  const start = t.indexOf(\"{\");\n  const end = t.lastIndexOf(\"}\");\n  if (start === -1 || end === -1 || end <= start) return null;\n  try {\n    return JSON.parse(t.slice(start, end + 1));\n  } catch (err) {\n    return null;\n  }\n}\n\nfunction num(v) {\n  if (v === null || v === undefined || v === \"\") return null;\n  const n = Number(String(v).replace(/[^0-9.\\-]/g, \"\"));\n  return Number.isFinite(n) ? n : null;\n}\n\nconst sources = $(\"Webhook: Invoice Intake\").all();\nconst incoming = $input.all();\nconst results = [];\n\nfor (let i = 0; i < incoming.length; i++) {\n  const src = sources[Math.min(i, sources.length - 1)];\n  const source_file = (src && src.json && src.json.query && src.json.query.source_file) || \"unknown\";\n\n  const parsed = extractJson(firstText(incoming[i].json.content));\n\n  // Could not read the model output at all -> a human looks at it.\n  if (!parsed) {\n    results.push({\n      json: {\n        source_file,\n        vendor_name: null, invoice_number: null, invoice_date: null, due_date: null,\n        currency: null, subtotal: null, tax_amount: null, total_amount: null,\n        line_items: [], line_items_json: \"[]\", confidence_notes: \"\",\n        status: \"needs_review\",\n        flag_reason: \"extraction_unreadable: model response was not valid JSON\",\n      },\n      pairedItem: { item: i },\n    });\n    continue;\n  }\n\n  const vendor_name = parsed.vendor_name || null;\n  const invoice_date = parsed.invoice_date || null;\n  const subtotal = num(parsed.subtotal);\n  const tax_amount = num(parsed.tax_amount);\n  const total_amount = num(parsed.total_amount);\n  const line_items = Array.isArray(parsed.line_items) ? parsed.line_items : [];\n  const confidence_notes = String(parsed.confidence_notes || \"\").trim();\n\n  const flags = [];\n\n  // 1. Required fields must be present.\n  const missing = [];\n  if (!vendor_name) missing.push(\"vendor_name\");\n  if (!invoice_date) missing.push(\"invoice_date\");\n  if (total_amount === null) missing.push(\"total_amount\");\n  if (missing.length) flags.push(\"missing_fields: \" + missing.join(\", \"));\n\n  // 2. Line items should reconcile to the subtotal.\n  if (line_items.length && subtotal !== null) {\n    const sum = line_items.reduce((acc, li) => {\n      const amt = num(li && li.amount);\n      if (amt !== null) return acc + amt;\n      const q = num(li && li.quantity);\n      const p = num(li && li.unit_price);\n      return q !== null && p !== null ? acc + q * p : acc;\n    }, 0);\n    const diff = Math.abs(sum - subtotal);\n    if (diff > TOLERANCE) {\n      flags.push(\n        \"line_items_do_not_match_subtotal: items sum to \" + sum.toFixed(2) +\n        \" but subtotal reads \" + subtotal.toFixed(2) + \" (off by \" + diff.toFixed(2) + \")\"\n      );\n    }\n  }\n\n  // 3. Subtotal + tax should reconcile to the total.\n  if (subtotal !== null && tax_amount !== null && total_amount !== null) {\n    const diff = Math.abs(subtotal + tax_amount - total_amount);\n    if (diff > TOLERANCE) {\n      flags.push(\n        \"totals_do_not_reconcile: \" + subtotal.toFixed(2) + \" + \" + tax_amount.toFixed(2) +\n        \" = \" + (subtotal + tax_amount).toFixed(2) + \" but total reads \" + total_amount.toFixed(2)\n      );\n    }\n  }\n\n  // 4. Large amounts get a human look before they are booked. Not an error.\n  if (total_amount !== null && total_amount > REVIEW_THRESHOLD) {\n    flags.push(\"above_review_threshold: \" + total_amount.toFixed(2) + \" exceeds \" + REVIEW_THRESHOLD);\n  }\n\n  // 5. The model told us it was unsure.\n  if (confidence_notes) flags.push(\"model_uncertain: \" + confidence_notes);\n\n  results.push({\n    json: {\n      source_file,\n      vendor_name,\n      invoice_number: parsed.invoice_number || null,\n      invoice_date,\n      due_date: parsed.due_date || null,\n      currency: parsed.currency || null,\n      subtotal,\n      tax_amount,\n      total_amount,\n      line_items,\n      line_items_json: JSON.stringify(line_items),\n      confidence_notes,\n      status: flags.length ? \"needs_review\" : \"auto_processed\",\n      flag_reason: flags.join(\" | \"),\n    },\n    pairedItem: { item: i },\n  });\n}\n\nreturn results;"
+      },
+      "id": "validate-and-flag",
+      "name": "Validate & Flag",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -280,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "timestamp",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "source_file",
+              "value": "={{ $json.source_file }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "vendor_name",
+              "value": "={{ $json.vendor_name }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "invoice_number",
+              "value": "={{ $json.invoice_number }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "invoice_date",
+              "value": "={{ $json.invoice_date }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "due_date",
+              "value": "={{ $json.due_date }}",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "currency",
+              "value": "={{ $json.currency }}",
+              "type": "string"
+            },
+            {
+              "id": "a8",
+              "name": "subtotal",
+              "value": "={{ $json.subtotal }}",
+              "type": "string"
+            },
+            {
+              "id": "a9",
+              "name": "tax_amount",
+              "value": "={{ $json.tax_amount }}",
+              "type": "string"
+            },
+            {
+              "id": "a10",
+              "name": "total_amount",
+              "value": "={{ $json.total_amount }}",
+              "type": "string"
+            },
+            {
+              "id": "a11",
+              "name": "line_items_json",
+              "value": "={{ $json.line_items_json }}",
+              "type": "string"
+            },
+            {
+              "id": "a12",
+              "name": "status",
+              "value": "={{ $json.status }}",
+              "type": "string"
+            },
+            {
+              "id": "a13",
+              "name": "flag_reason",
+              "value": "={{ $json.flag_reason }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "build-ledger-row",
+      "name": "Build Ledger Row",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -40,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_YOUR_LEDGER_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ledger"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_file",
+              "displayName": "source_file",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "vendor_name",
+              "displayName": "vendor_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "invoice_date",
+              "displayName": "invoice_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "due_date",
+              "displayName": "due_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "subtotal",
+              "displayName": "subtotal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tax_amount",
+              "displayName": "tax_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "line_items_json",
+              "displayName": "line_items_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "flag_reason",
+              "displayName": "flag_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "sheets-append-ledger",
+      "name": "Sheets: Append to Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        200,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: Invoice Intake": {
+      "main": [
+        [
+          {
+            "node": "Extract Invoice Data (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Invoice Data (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Validate & Flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Flag": {
+      "main": [
+        [
+          {
+            "node": "Build Ledger Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Ledger Row": {
+      "main": [
+        [
+          {
+            "node": "Sheets: Append to Ledger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

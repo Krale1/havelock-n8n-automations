@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Which demo variant this is. Kept in a meta tag, not in the visible page:
+     the workflow strips tags before comparing, so this never reaches the model
+     and never shows up as a phantom change. serve.mjs reads it to report the
+     current variant back to the console. -->
+<meta name="x-demo-variant" content="baseline">
+<title>Quillbeck — Pricing</title>
+<style>
+  :root { --ink:#1d2329; --mid:#5d666f; --line:#e4e7eb; --accent:#1f7a5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f7f8f9; color:var(--ink);
+         font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { background:#fff; border-bottom:1px solid var(--line); padding:18px 24px; }
+  .brand { font-weight:700; letter-spacing:-.02em; font-size:18px; }
+  .wrap { max-width:1000px; margin:0 auto; padding:40px 24px 60px; }
+  .lede { text-align:center; margin-bottom:8px; font-size:26px; font-weight:680; letter-spacing:-.02em; }
+  .sub { text-align:center; color:var(--mid); margin:0 0 6px; }
+  .proof { text-align:center; color:var(--mid); font-size:13px; margin-bottom:34px; }
+  .plans { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:18px; }
+  .plan { background:#fff; border:1px solid var(--line); border-radius:10px; padding:22px; }
+  .plan__name { margin:0 0 10px; font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--mid); }
+  .plan__price { margin:0 0 10px; }
+  .amount { font-size:34px; font-weight:700; letter-spacing:-.02em; }
+  .per { color:var(--mid); font-size:14px; }
+  .plan__blurb { color:var(--mid); margin:0 0 16px; font-size:13.5px; }
+  .plan__features { list-style:none; margin:0 0 20px; padding:0; }
+  .plan__features li { padding:6px 0 6px 20px; position:relative; border-top:1px solid #f1f3f5; font-size:14px; }
+  .plan__features li:before { content:"✓"; position:absolute; left:0; color:var(--accent); font-weight:700; }
+  .plan__cta { display:block; text-align:center; background:var(--accent); color:#fff;
+               text-decoration:none; padding:9px; border-radius:6px; font-weight:600; font-size:14px; }
+  blockquote { max-width:640px; margin:42px auto 0; text-align:center; color:var(--mid); font-style:italic; }
+  footer { text-align:center; color:#98a1aa; font-size:12px; padding:28px 24px 44px; }
+</style>
+</head>
+<body>
+<header><div class="brand">Quillbeck</div></header>
+
+<div class="wrap">
+  <h1 class="lede">Simple pricing that grows with you</h1>
+  <p class="sub">Payroll and books for small teams, without the spreadsheet sprawl.</p>
+  <p class="proof">Trusted by 500+ small businesses</p>
+
+  <div class="plans">
+
+      <article class="plan">
+        <h2 class="plan__name">Starter</h2>
+        <p class="plan__price"><span class="amount">$19</span><span class="per">/month</span></p>
+        <p class="plan__blurb">For sole traders and very small teams.</p>
+        <ul class="plan__features">
+          <li>Up to 3 employees</li>
+          <li>Automated payslips</li>
+          <li>Bank feed connection</li>
+          <li>Email support</li>
+        </ul>
+        <a class="plan__cta" href="#">Start free trial</a>
+      </article>
+
+      <article class="plan">
+        <h2 class="plan__name">Growth</h2>
+        <p class="plan__price"><span class="amount">$49</span><span class="per">/month</span></p>
+        <p class="plan__blurb">For growing teams that need more control.</p>
+        <ul class="plan__features">
+          <li>Up to 25 employees</li>
+          <li>Automated payslips</li>
+          <li>Bank feed connection</li>
+          <li>Expense capture</li>
+          <li>Multi-user access</li>
+          <li>Priority email support</li>
+        </ul>
+        <a class="plan__cta" href="#">Start free trial</a>
+      </article>
+
+      <article class="plan">
+        <h2 class="plan__name">Pro</h2>
+        <p class="plan__price"><span class="amount">$99</span><span class="per">/month</span></p>
+        <p class="plan__blurb">For established businesses with an accountant.</p>
+        <ul class="plan__features">
+          <li>Unlimited employees</li>
+          <li>Everything in Growth</li>
+          <li>Accountant collaboration</li>
+          <li>Custom report builder</li>
+          <li>Phone support</li>
+        </ul>
+        <a class="plan__cta" href="#">Start free trial</a>
+      </article>
+  </div>
+
+  <blockquote>"We switched from spreadsheets and never looked back." — Priya, Studio Owner</blockquote>
+</div>
+
+<footer>© 2025 Quillbeck Ltd · Fictional company, used for a demo</footer>
+</body>
+</html>
